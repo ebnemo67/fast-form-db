@@ -59,6 +59,15 @@ To deploy this as a production-ready web app:
    npm run build # To generate files for deployment (Netlify, Vercel, etc.)
    ```
 
+## Database Architecture
+
+This system uses **IndexedDB** for client-side data persistence. This allows the application to remain a standalone single-file solution while still retaining data across browser sessions and refreshes.
+
+- **Storage Type**: NoSQL Key-Value Store (IndexedDB)
+- **Schema**: Automatically initialized on first load.
+- **Data Integrity**: Transactions are persisted to the database before updating the application state.
+- **Portability**: Since data is stored in the browser's profile, it is private to the user and requires no server-side database setup.
+
 ## Admin Demo Credentials
 - **Manager**: admin / admin123
 - **Teller**: teller1 / teller123

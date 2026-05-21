@@ -140,59 +140,124 @@ const generateDocNumber = (series, docSeries) => {
   return `${ds.prefix}${new Date().getFullYear()}-${ds.next.toString().padStart(5, '0')}`;
 };
 
+// --- DATABASE SETUP (IndexedDB) ---
+
+const DB_NAME = 'CoopDB';
+const DB_VERSION = 1;
+const STORES = ['members', 'accounts', 'savings', 'loans', 'transactions', 'journal', 'docSeries', 'settings'];
+
+const dbService = {
+  init() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        STORES.forEach(store => {
+          if (!db.objectStoreNames.contains(store)) db.createObjectStore(store, { keyPath: 'id', autoIncrement: true });
+        });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  async getAll(storeName) {
+    const db = await this.init();
+    return new Promise((resolve) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result);
+    });
+  },
+
+  async save(storeName, data) {
+    const db = await this.init();
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    return new Promise((resolve) => {
+      const req = store.put(data);
+      req.onsuccess = () => resolve(req.result);
+    });
+  },
+
+  async bulkSave(storeName, dataArray) {
+    const db = await this.init();
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    dataArray.forEach(item => store.put(item));
+    return new Promise((resolve) => {
+      tx.oncomplete = () => resolve();
+    });
+  }
+};
+
 // --- MAIN COMPONENT ---
 
 export default function CoopSystem() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('dashboard');
-  const [docSeries, setDocSeries] = useState(INITIAL_DOC_SERIES);
-  const [members, setMembers] = useState(INITIAL_MEMBERS);
-  const [accounts, setAccounts] = useState(CDA_ACCOUNTS);
-  const [savingsAccounts, setSavingsAccounts] = useState([
-    { id: 'S-001', memberId: 'M001', type: 'Regular Savings', balance: 25000, status: 'Active' },
-    { id: 'SC-001', memberId: 'M001', type: 'Share Capital', balance: 50000, status: 'Active' },
-    { id: 'TD-001', memberId: 'M001', type: 'Time Deposit', balance: 100000, status: 'Active', maturityDate: '2024-12-31', interestRate: 5 },
-  ]);
+  const [loading, setLoading] = useState(true);
+
+  const [docSeries, setDocSeries] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [savingsAccounts, setSavingsAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [loans, setLoans] = useState([
-    {
-      id: 'LN-2024-00001',
-      memberId: 'M001',
-      amount: 50000,
-      balance: 15000,
-      status: 'Released',
-      type: 'Productive',
-      term: 12,
-      rate: 1,
-      method: 'Diminishing',
-      releaseDate: '2024-01-10',
-      nextDue: '2024-04-10', // Set to past due for demo
-      amortization: [
-        { period: 1, principal: 4000, interest: 500, total: 4500, balance: 46000 },
-        { period: 2, principal: 4040, interest: 460, total: 4500, balance: 41960 },
-      ]
-    }
-  ]);
-  const [journalEntries, setJournalEntries] = useState([
-    {
-      id: 'JV-2023-00001',
-      date: '2023-12-31',
-      ref: 'JV-2023-00001',
-      total: 1000,
-      status: 'Posted',
-      entries: [
-        { accountCode: '11100', debit: 1000, credit: 0 },
-        { accountCode: '42000', debit: 0, credit: 1000 }
-      ]
-    }
-  ]);
+  const [loans, setLoans] = useState([]);
+  const [journalEntries, setJournalEntries] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [coopSettings, setCoopSettings] = useState({
+    id: 'MAIN',
     name: 'Philippine Cooperative Inc.',
     address: '123 Cooperative St, Quezon City, Philippines',
     regNo: 'CDA REG 9520-12345678',
     logoText: 'COOP-SYS'
   });
+
+  // --- DB SYNC ---
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [dMems, dAccs, dSav, dLoans, dTx, dJournal, dSeries, dSets] = await Promise.all([
+          dbService.getAll('members'),
+          dbService.getAll('accounts'),
+          dbService.getAll('savings'),
+          dbService.getAll('loans'),
+          dbService.getAll('transactions'),
+          dbService.getAll('journal'),
+          dbService.getAll('docSeries'),
+          dbService.getAll('settings')
+        ]);
+
+        if (dAccs.length === 0) {
+          // First time setup - populate demo data
+          await dbService.bulkSave('accounts', CDA_ACCOUNTS);
+          await dbService.bulkSave('members', INITIAL_MEMBERS);
+          await dbService.bulkSave('docSeries', INITIAL_DOC_SERIES);
+          await dbService.save('settings', coopSettings);
+
+          setAccounts(CDA_ACCOUNTS);
+          setMembers(INITIAL_MEMBERS);
+          setDocSeries(INITIAL_DOC_SERIES);
+        } else {
+          setMembers(dMems);
+          setAccounts(dAccs);
+          setSavingsAccounts(dSav);
+          setLoans(dLoans);
+          setTransactions(dTx);
+          setJournalEntries(dJournal);
+          setDocSeries(dSeries);
+          if (dSets[0]) setCoopSettings(dSets[0]);
+        }
+      } catch (err) {
+        console.error('DB Load Error:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadData();
+  }, []);
 
   // --- NAVIGATION CONFIG ---
   const menuItems = [
@@ -208,6 +273,17 @@ export default function CoopSystem() {
   ];
 
   const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role));
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-500 font-medium">Connecting to Database...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
@@ -471,14 +547,8 @@ function SavingsView({ user, members, savingsAccounts, setSavingsAccounts, trans
 
     const multiplier = showModal === 'withdraw' ? -1 : 1;
 
-    // Update account balance
-    setSavingsAccounts(prev => prev.map(acc =>
-      acc.id === selectedAccount.id
-        ? { ...acc, balance: acc.balance + (amount * multiplier) }
-        : acc
-    ));
-
-    // Record transaction
+    // Persistence Layer
+    const updatedAccount = { ...selectedAccount, balance: selectedAccount.balance + (amount * multiplier) };
     const ref = formData.reference || `SV-${Date.now().toString().slice(-6)}`;
     const newTx = {
       id: `TX-${Date.now()}`,
@@ -489,11 +559,8 @@ function SavingsView({ user, members, savingsAccounts, setSavingsAccounts, trans
       date: new Date().toISOString(),
       reference: ref
     };
-    setTransactions([newTx, ...transactions]);
-
-    // Add to Journal
     const isDeposit = showModal === 'deposit';
-    setJournalEntries(prev => [{
+    const newJv = {
       id: `JV-SV-${Date.now()}`,
       date: new Date().toISOString().split('T')[0],
       ref: ref,
@@ -503,7 +570,17 @@ function SavingsView({ user, members, savingsAccounts, setSavingsAccounts, trans
         { accountCode: isDeposit ? '11100' : '21100', debit: amount, credit: 0 },
         { accountCode: isDeposit ? '21100' : '11100', debit: 0, credit: amount }
       ]
-    }, ...prev]);
+    };
+
+    // Save to DB
+    dbService.save('savings', updatedAccount);
+    dbService.save('transactions', newTx);
+    dbService.save('journal', newJv);
+
+    // Update state
+    setSavingsAccounts(prev => prev.map(acc => acc.id === selectedAccount.id ? updatedAccount : acc));
+    setTransactions([newTx, ...transactions]);
+    setJournalEntries(prev => [newJv, ...prev]);
 
     setShowModal(null);
     setFormData({});
@@ -520,6 +597,7 @@ function SavingsView({ user, members, savingsAccounts, setSavingsAccounts, trans
       interestRate: formData.type === 'Time Deposit' ? parseFloat(formData.rate) : 0,
       maturityDate: formData.type === 'Time Deposit' ? formData.maturity : null,
     };
+    dbService.save('savings', newAcc);
     setSavingsAccounts([...savingsAccounts, newAcc]);
     setShowModal(null);
     setFormData({});
@@ -816,6 +894,7 @@ function LoansView({ user, members, loans, setLoans, setJournalEntries }) {
       amortization: schedule
     };
 
+    dbService.save('loans', newLoan);
     setLoans([newLoan, ...loans]);
     setShowModal(null);
   };
@@ -825,7 +904,7 @@ function LoansView({ user, members, loans, setLoans, setJournalEntries }) {
       if (l.id === loanId) {
         if (newStatus === 'Released' && l.status !== 'Released') {
           // Add to Journal on Release
-          setJournalEntries(prevJE => [{
+          const jvEntry = {
             id: `JV-LN-${Date.now()}`,
             date: new Date().toISOString().split('T')[0],
             ref: l.id,
@@ -835,9 +914,13 @@ function LoansView({ user, members, loans, setLoans, setJournalEntries }) {
               { accountCode: l.type === 'Productive' ? '12100' : '12200', debit: l.amount, credit: 0 },
               { accountCode: '11100', debit: 0, credit: l.amount }
             ]
-          }, ...prevJE]);
+          };
+          dbService.save('journal', jvEntry);
+          setJournalEntries(prevJE => [jvEntry, ...prevJE]);
         }
-        return { ...l, status: newStatus, releaseDate: newStatus === 'Released' ? new Date().toISOString().split('T')[0] : l.releaseDate };
+        const updated = { ...l, status: newStatus, releaseDate: newStatus === 'Released' ? new Date().toISOString().split('T')[0] : l.releaseDate };
+        dbService.save('loans', updated);
+        return updated;
       }
       return l;
     }));
@@ -1079,40 +1162,22 @@ function CollectionsView({ user, members, loans, setLoans, setTransactions, setJ
   const [showOR, setShowOR] = useState(null);
   const [inputAmounts, setInputAmounts] = useState({});
 
-  const postCollection = (loan) => {
+  const postCollection = async (loan) => {
     const amount = parseFloat(inputAmounts[loan.id]);
     if (!amount || amount <= 0) return alert('Invalid amount');
 
-    // 1. Update Loan Balance
-    setLoans(prev => prev.map(l =>
-      l.id === loan.id ? { ...l, balance: l.balance - amount } : l
-    ));
-
-    // 2. Add to Remittance
     const orNum = `OR-${Date.now().toString().slice(-6)}`;
-    const entry = {
-      id: Date.now(),
-      orNumber: orNum,
-      loanId: loan.id,
-      memberId: loan.memberId,
-      amount: parseFloat(amount),
-      date: new Date().toISOString()
-    };
-    setRemittance([entry, ...remittance]);
-
-    // 3. Add to Transactions
-    setTransactions(prev => [{
+    const updatedLoan = { ...loan, balance: loan.balance - amount };
+    const txEntry = {
       id: `TX-COL-${Date.now()}`,
       accountId: loan.id,
       memberId: loan.memberId,
       type: 'Loan Payment',
-      amount: parseFloat(amount),
+      amount: amount,
       date: new Date().toISOString(),
       reference: orNum
-    }, ...prev]);
-
-    // 4. Add to Journal
-    setJournalEntries(prev => [{
+    };
+    const jvEntry = {
       id: `JV-COL-${Date.now()}`,
       date: new Date().toISOString().split('T')[0],
       ref: orNum,
@@ -1122,9 +1187,22 @@ function CollectionsView({ user, members, loans, setLoans, setTransactions, setJ
         { accountCode: '11100', debit: amount, credit: 0 },
         { accountCode: loan.type === 'Productive' ? '12100' : '12200', debit: 0, credit: amount }
       ]
-    }, ...prev]);
+    };
+    const remittanceEntry = { id: Date.now(), orNumber: orNum, loanId: loan.id, memberId: loan.memberId, amount, date: new Date().toISOString() };
 
-    setShowOR(entry);
+    // Persistence
+    await Promise.all([
+      dbService.save('loans', updatedLoan),
+      dbService.save('transactions', txEntry),
+      dbService.save('journal', jvEntry)
+    ]);
+
+    // State Sync
+    setLoans(prev => prev.map(l => l.id === loan.id ? updatedLoan : l));
+    setTransactions(prev => [txEntry, ...prev]);
+    setJournalEntries(prev => [jvEntry, ...prev]);
+    setRemittance([remittanceEntry, ...remittance]);
+    setShowOR(remittanceEntry);
   };
 
   return (
@@ -1369,7 +1447,9 @@ function AccountingView({ user, accounts, setAccounts, journalEntries, setJourna
   const handleAdd = (e) => {
     e.preventDefault();
     if (accounts.some(a => a.code === newAcc.code)) return alert('Account code already exists');
-    setAccounts([...accounts, newAcc]);
+    const accToSave = { ...newAcc, id: newAcc.code };
+    dbService.save('accounts', accToSave);
+    setAccounts([...accounts, accToSave]);
     setShowAdd(false);
     setNewAcc({ class: 'Assets', type: 'Current' });
   };
@@ -1390,6 +1470,7 @@ function AccountingView({ user, accounts, setAccounts, journalEntries, setJourna
       total: totalDebit
     };
 
+    dbService.save('journal', newJv);
     setJournalEntries([newJv, ...journalEntries]);
     setShowJV(false);
     setJvData({
@@ -2310,7 +2391,13 @@ function SettingsView({ coopSettings, setCoopSettings }) {
             className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
           />
         </div>
-        <button className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition mt-4">
+        <button
+          onClick={() => {
+            dbService.save('settings', coopSettings);
+            alert('Settings saved to database.');
+          }}
+          className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition mt-4"
+        >
           Save Configuration
         </button>
       </div>
